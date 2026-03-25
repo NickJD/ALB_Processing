@@ -1,0 +1,22 @@
+=== 16S Length Distribution Analysis ===
+
+Total genomes analysed: 1861579
+Total 16S sequences detected: 2381233
+
+Per-genome classification:
+Genomes with >=1400 bp 16S: 1269426 (0.682)
+Genomes with only truncated (<1400 bp): 591142 (0.318)
+Genomes with multiple 16S copies: 443364 (0.238)
+Genomes with no 16S detected: 1011 (0.001)
+
+Length bins (all detected 16S copies):
+1000-1399: 319311
+1400-1599: 1276540
+500-999: 605102
+<500: 180244
+>=1600: 36
+
+Summary statistics (all copies):
+Min length: 396
+Max length: 1777
+Mean length: 1185.40

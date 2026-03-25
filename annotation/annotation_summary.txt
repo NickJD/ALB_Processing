@@ -1,0 +1,26 @@
+Annotation Summary
+==================
+Date: Sun Jan 18 19:47:23 GMT 2026
+Runtime: 890735 seconds
+Genome directory: ../0.2/genomes/
+Output directory: annotations
+
+Statistics:
+-----------
+Total genomes found: 1861590
+Successfully annotated: 1861582
+Failed (processing errors): 9
+Corrupted/incomplete files: 9
+Total genes predicted: 8386562666
+Average genes per genome: 4505
+
+Output files per genome:
+- .gff : Gene coordinates and annotations
+- .fna : Gene nucleotide sequences
+- .faa : Protein sequences (amino acids)
+
+Files:
+------
+Log file: annotation_log.tsv
+Failed genomes: failed_genomes.txt
+Corrupted genomes: corrupted_genomes.txt

@@ -1,0 +1,195 @@
+#!/bin/bash
+#SBATCH --job-name=pyrodigal_annotate
+#SBATCH --output=/users/3057556/jobs/ALB/pyrodigal_%A_%a.out
+#SBATCH --error=/users/3057556/jobs/ALB/pyrodigal_%A_%a.err
+#SBATCH --array=0-930%200
+#SBATCH --partition=k2-bioinf,k2-lowpri
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=8G
+#SBATCH --time=24:00:00
+#SBATCH --mail-user=n.dimonaco@qub.ac.uk
+#SBATCH --mail-type=BEGIN,END,FAIL
+
+set -euo pipefail
+
+module load apps/anaconda3/2024.06/bin
+source activate /mnt/scratch2/igfs-anaconda/conda-envs/pyrodigal_3.6.3  # Adjust env name
+
+# Configuration
+BATCH_DIR="/mnt/scratch2/users/3057556/DASA/pyrodigal_output/pyrodigal_batchfiles"
+OUT_BASE="/mnt/scratch2/users/3057556/DASA/pyrodigal_output"
+
+# Output directories
+GFF_DIR="${OUT_BASE}/GFF"
+DNA_DIR="${OUT_BASE}/DNA_FASTA"
+AA_DIR="${OUT_BASE}/AA_FASTA"
+LOG_DIR="${OUT_BASE}/logs"
+
+# Create output directories
+mkdir -p "${GFF_DIR}" "${DNA_DIR}" "${AA_DIR}" "${LOG_DIR}"
+
+# Batch file for this task (0-indexed)
+batch_list="${BATCH_DIR}/batch_$(printf "%05d" ${SLURM_ARRAY_TASK_ID}).list"
+
+# Verify batch file exists
+if [[ ! -f "${batch_list}" ]]; then
+  echo "ERROR: Batch file not found: ${batch_list}"
+  exit 1
+fi
+
+genome_count=$(wc -l < "${batch_list}")
+
+echo "=========================================="
+echo "Task ${SLURM_ARRAY_TASK_ID} started at $(date)"
+echo "Processing ${genome_count} genomes from ${batch_list}"
+echo "=========================================="
+
+# Process each genome in the batch
+success_count=0
+fail_count=0
+skip_count=0
+
+while IFS= read -r genome_path; do
+  # Skip empty lines
+  [[ -z "${genome_path}" ]] && continue
+  
+  # Extract genome ID from filename
+  genome_id=$(basename "${genome_path}" .fa.gz)
+  
+  # Define output files
+  gff_out="${GFF_DIR}/${genome_id}.gff"
+  dna_out="${DNA_DIR}/${genome_id}_genes.fna"
+  aa_out="${AA_DIR}/${genome_id}_proteins.faa"
+  
+  # Skip if all outputs already exist
+  if [[ -f "${gff_out}" ]] && [[ -f "${dna_out}" ]] && [[ -f "${aa_out}" ]]; then
+    ((skip_count++))
+    continue
+  fi
+  
+  # Check if input file exists
+  if [[ ! -f "${genome_path}" ]]; then
+    echo "WARNING: File not found: ${genome_path}" >&2
+    ((fail_count++))
+    continue
+  fi
+  
+  # Run Pyrodigal
+  if python3 << EOF
+import sys
+import gzip
+from pathlib import Path
+import pyrodigal
+
+# Input/output paths
+genome_path = "${genome_path}"
+gff_out = "${gff_out}"
+dna_out = "${dna_out}"
+aa_out = "${aa_out}"
+genome_id = "${genome_id}"
+
+try:
+    # Read genome (handle gzipped files)
+    if genome_path.endswith('.gz'):
+        with gzip.open(genome_path, 'rt') as f:
+            sequence_data = f.read()
+    else:
+        with open(genome_path, 'r') as f:
+            sequence_data = f.read()
+    
+    # Parse FASTA
+    sequences = {}
+    current_header = None
+    current_seq = []
+    
+    for line in sequence_data.strip().split('\n'):
+        if line.startswith('>'):
+            if current_header:
+                sequences[current_header] = ''.join(current_seq)
+            current_header = line[1:].split()[0]
+            current_seq = []
+        else:
+            current_seq.append(line.strip())
+    
+    if current_header:
+        sequences[current_header] = ''.join(current_seq)
+    
+    if not sequences:
+        sys.exit(1)
+    
+    # Initialise Pyrodigal
+    orf_finder = pyrodigal.GeneFinder(meta=False)
+    
+    # Train on combined sequence
+    if len(sequences) == 1:
+        training_seq = list(sequences.values())[0]
+    else:
+        training_seq = ''.join(sequences.values())
+    
+    orf_finder.train(training_seq.encode())
+    
+    # Open output files
+    with open(gff_out, 'w') as gff_f, \
+         open(dna_out, 'w') as dna_f, \
+         open(aa_out, 'w') as aa_f:
+        
+        gff_f.write("##gff-version 3\n")
+        
+        gene_counter = 1
+        
+        for seq_id, seq in sequences.items():
+            genes = orf_finder.find_genes(seq.encode())
+            
+            for gene in genes:
+                gene_id = f"{genome_id}_{gene_counter:05d}"
+                
+                # GFF
+                gff_f.write(f"{seq_id}\tPyrodigal\tCDS\t{gene.begin}\t{gene.end}\t"
+                           f"{gene.score:.1f}\t{'+' if gene.strand == 1 else '-'}\t"
+                           f"{gene.partial_begin}{gene.partial_end}\t"
+                           f"ID={gene_id};partial={'1' if gene.partial_begin or gene.partial_end else '0'}\n")
+                
+                # DNA
+                dna_f.write(f">{gene_id} # {gene.begin} # {gene.end} # "
+                           f"{'+' if gene.strand == 1 else '-'} # ID={seq_id}\n")
+                dna_f.write(f"{gene.sequence()}\n")
+                
+                # Protein
+                aa_f.write(f">{gene_id} # {gene.begin} # {gene.end} # "
+                          f"{'+' if gene.strand == 1 else '-'} # ID={seq_id}\n")
+                aa_f.write(f"{gene.translate()}\n")
+                
+                gene_counter += 1
+    
+    sys.exit(0)
+
+except Exception as e:
+    import traceback
+    traceback.print_exc(file=sys.stderr)
+    sys.exit(1)
+EOF
+  then
+    ((success_count++))
+    if (( success_count % 100 == 0 )); then
+      echo "Progress: ${success_count}/${genome_count} genomes processed"
+    fi
+  else
+    ((fail_count++))
+    rm -f "${gff_out}" "${dna_out}" "${aa_out}"
+  fi
+  
+done < "${batch_list}"
+
+echo "=========================================="
+echo "Task ${SLURM_ARRAY_TASK_ID} completed at $(date)"
+echo "Success: ${success_count}"
+echo "Failed: ${fail_count}"
+echo "Skipped: ${skip_count}"
+echo "Total: ${genome_count}"
+echo "=========================================="
+
+# Write summary
+echo "${SLURM_ARRAY_TASK_ID},${success_count},${fail_count},${skip_count}" >> "${LOG_DIR}/task_summary.csv"
+
+exit 0
